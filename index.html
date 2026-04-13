@@ -608,6 +608,34 @@
             margin-bottom: 48px;
         }
 
+        .rising-time-tabs {
+            display: flex;
+            gap: 6px;
+            margin-left: auto;
+        }
+
+        .time-tab {
+            padding: 4px 12px;
+            background: rgba(13, 17, 23, 0.6);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            color: var(--text-secondary);
+            font-size: 0.78rem;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        .time-tab:hover {
+            border-color: var(--accent-cyan);
+            color: var(--text-primary);
+        }
+
+        .time-tab.active {
+            background: rgba(57, 210, 192, 0.12);
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
+        }
+
         .rising-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
@@ -1203,7 +1231,11 @@
         <div class="section-title">
             <span class="icon">🌟</span>
             <h2>新秀榜</h2>
-            <span class="badge blue">近 90 天</span>
+            <div class="rising-time-tabs" id="risingTimeTabs">
+                <button class="time-tab" data-days="7">近 7 天</button>
+                <button class="time-tab active" data-days="30">近 30 天</button>
+                <button class="time-tab" data-days="90">近 90 天</button>
+            </div>
         </div>
         <div class="rising-grid" id="risingGrid"></div>
     </section>
@@ -1395,8 +1427,9 @@ const CONFIG = {
     ],
     perPage: 30,
     minStars: 500,
-    cacheKey: 'ai_trending_v3',
-    cacheDuration: 30 * 60 * 1000,
+    cacheKey: 'ai_trending_v4',
+    cacheDuration: 5 * 60 * 1000, // 5分钟缓存
+    refreshInterval: 5 * 60 * 1000, // 5分钟自动刷新
 };
 
 const LANG_COLORS = {
@@ -1424,6 +1457,9 @@ let currentFilter = 'all';
 let currentSort = 'stars';
 let currentSearch = '';
 let isLoading = false;
+let lastFetchTime = '';
+let refreshTimer = null;
+let risingDays = 30; // 新秀榜默认30天
 
 // ===== Utility Functions =====
 function formatNumber(num) {
@@ -1527,14 +1563,21 @@ async function fetchFromGitHub(query, page = 1) {
     return await response.json();
 }
 
-async function fetchAllProjects() {
+async function fetchAllProjects(forceRefresh = false) {
     const cached = localStorage.getItem(CONFIG.cacheKey);
-    if (cached) {
-        const { data, timestamp } = JSON.parse(cached);
-        if (Date.now() - timestamp < CONFIG.cacheDuration) return data;
+    if (!forceRefresh && cached) {
+        try {
+            const { data, timestamp, fetchTime } = JSON.parse(cached);
+            if (Date.now() - timestamp < CONFIG.cacheDuration) {
+                return { projects: data, fetchTime };
+            }
+        } catch (e) {
+            console.warn('Cache parse error:', e);
+        }
     }
 
     const projectMap = new Map();
+    const fetchStartTime = Date.now();
 
     async function fetchAndCollect(query, minStars) {
         try {
@@ -1594,8 +1637,17 @@ async function fetchAllProjects() {
         p.sparklineData = generateSparklineData(p);
     });
 
-    localStorage.setItem(CONFIG.cacheKey, JSON.stringify({ data: projects, timestamp: Date.now() }));
-    return projects;
+    const fetchTime = new Date(fetchStartTime).toLocaleString('zh-CN', {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    });
+
+    localStorage.setItem(CONFIG.cacheKey, JSON.stringify({
+        data: projects,
+        timestamp: Date.now(),
+        fetchTime: fetchTime
+    }));
+    return { projects, fetchTime };
 }
 
 // ===== Render Surging Board =====
@@ -1679,9 +1731,9 @@ function renderSurgingBoard() {
 }
 
 // ===== Render Rising Stars Board =====
-function renderRisingStars() {
+function renderRisingStars(days = 30) {
     const rising = allProjects
-        .filter(p => p.age_days < 90)
+        .filter(p => p.age_days < days)
         .sort((a, b) => b.daily_star_rate - a.daily_star_rate)
         .slice(0, 8);
 
@@ -1887,6 +1939,16 @@ document.getElementById('sortSelect').addEventListener('change', (e) => {
     applyFiltersAndSort();
 });
 
+// Rising Stars time tabs
+document.getElementById('risingTimeTabs')?.addEventListener('click', (e) => {
+    const tab = e.target.closest('.time-tab');
+    if (!tab) return;
+    document.querySelectorAll('.time-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    risingDays = parseInt(tab.dataset.days);
+    renderRisingStars(risingDays);
+});
+
 // ===== Card Click Navigation =====
 document.addEventListener('click', (e) => {
     // Don't intercept if user clicked on an actual link or button
@@ -1920,17 +1982,21 @@ document.addEventListener('click', (e) => {
 });
 
 // ===== Initialize =====
-async function init() {
+async function init(forceRefresh = false) {
     isLoading = true;
     renderProjects();
 
     try {
-        allProjects = await fetchAllProjects();
+        const result = await fetchAllProjects(forceRefresh);
+        allProjects = result.projects;
+        lastFetchTime = result.fetchTime;
         isLoading = false;
         updateStats();
         renderSurgingBoard();
-        renderRisingStars();
+        renderRisingStars(risingDays);
         applyFiltersAndSort();
+        updateFetchTimeDisplay();
+        scheduleRefresh();
     } catch (error) {
         isLoading = false;
         document.getElementById('projectList').innerHTML = `
@@ -1938,9 +2004,35 @@ async function init() {
                 <div class="error-icon">⚠️</div>
                 <h3>数据加载失败</h3>
                 <p>${error.message || '无法连接到 GitHub API，请检查网络连接后重试'}</p>
-                <button class="retry-btn" onclick="init()">重新加载</button>
+                <button class="retry-btn" onclick="init(true)">重新加载</button>
             </div>`;
     }
+}
+
+function updateFetchTimeDisplay() {
+    const el = document.getElementById('updateTime');
+    if (el && lastFetchTime) {
+        el.textContent = `数据获取时间: ${lastFetchTime}`;
+    }
+}
+
+function scheduleRefresh() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(async () => {
+        console.log('Auto refreshing data...');
+        try {
+            const result = await fetchAllProjects(true);
+            allProjects = result.projects;
+            lastFetchTime = result.fetchTime;
+            updateStats();
+            renderSurgingBoard();
+            renderRisingStars(risingDays);
+            applyFiltersAndSort();
+            updateFetchTimeDisplay();
+        } catch (e) {
+            console.warn('Auto refresh failed:', e);
+        }
+    }, CONFIG.refreshInterval);
 }
 
 init();
