@@ -1412,24 +1412,37 @@ const CONFIG = {
     ],
     // Recent hot projects (created recently, pushed recently)
     recentQueries: [
-        'AI agent pushed:>2026-04-06 stars:>500',
-        'LLM pushed:>2026-04-06 stars:>500',
-        'generative AI pushed:>2026-04-06 stars:>500',
-        'AI framework pushed:>2026-04-06 stars:>500',
-        'deep learning pushed:>2026-04-06 stars:>500',
+        'AI agent pushed:>2026-04-06 stars:>100',
+        'LLM pushed:>2026-04-06 stars:>100',
+        'generative AI pushed:>2026-04-06 stars:>100',
+        'AI framework pushed:>2026-04-06 stars:>100',
+        'deep learning pushed:>2026-04-06 stars:>100',
+        'AI pushed:>2026-04-06 stars:>100',
     ],
     // Rising stars (new repos with rapid growth)
     risingQueries: [
-        'AI created:>2026-01-01 stars:>1000 sort:stars',
-        'LLM created:>2026-01-01 stars:>500 sort:stars',
-        'agent created:>2026-01-01 stars:>500 sort:stars',
-        'AI tool created:>2026-01-01 stars:>300 sort:stars',
+        // Very new (7 days)
+        'AI created:>2026-04-06 stars:>50',
+        'LLM created:>2026-04-06 stars:>50',
+        'agent created:>2026-04-06 stars:>30',
+        'AI tool created:>2026-04-06 stars:>30',
+        // New (30 days)
+        'AI created:>2026-03-14 stars:>200',
+        'LLM created:>2026-03-14 stars:>200',
+        'agent created:>2026-03-14 stars:>100',
+        'AI tool created:>2026-03-14 stars:>100',
+        // Recent (90 days)
+        'AI created:>2026-01-13 stars:>500',
+        'LLM created:>2026-01-13 stars:>500',
+        'agent created:>2026-01-13 stars:>300',
+        'AI tool created:>2026-01-13 stars:>300',
+        'created:>2026-01-13 stars:>1000 sort:stars',
     ],
     perPage: 30,
     minStars: 500,
     cacheKey: 'ai_trending_v4',
     cacheDuration: 5 * 60 * 1000, // 5分钟缓存
-    refreshInterval: 5 * 60 * 1000, // 5分钟自动刷新
+    refreshInterval: 10 * 60 * 1000, // 10分钟自动刷新
 };
 
 const LANG_COLORS = {
@@ -1555,7 +1568,7 @@ function renderSparklineSVG(data, color = '#3fb950', gradId = 'sparkGrad') {
     </svg>`;
 }
 
-// ===== GitHub API =====
+// ===== Data Fetching =====
 async function fetchFromGitHub(query, page = 1) {
     const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=${CONFIG.perPage}&page=${page}`;
     const response = await fetch(url);
@@ -1563,7 +1576,31 @@ async function fetchFromGitHub(query, page = 1) {
     return await response.json();
 }
 
+async function fetchPrebuiltData() {
+    try {
+        const response = await fetch('./data.json?t=' + Date.now());
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (data && data.projects && data.projects.length > 0) {
+            return data;
+        }
+    } catch (e) {
+        console.warn('Failed to fetch data.json:', e);
+    }
+    return null;
+}
+
 async function fetchAllProjects(forceRefresh = false) {
+    // Try pre-built data first (from GitHub Actions)
+    const prebuilt = await fetchPrebuiltData();
+    if (prebuilt) {
+        lastFetchTime = prebuilt.fetchTime || '';
+        return { projects: prebuilt.projects, fetchTime: prebuilt.fetchTime };
+    }
+
+    // Fallback: fetch directly from GitHub API (for local dev)
+    console.log('data.json not available, fetching from GitHub API directly...');
+
     const cached = localStorage.getItem(CONFIG.cacheKey);
     if (!forceRefresh && cached) {
         try {
@@ -1595,7 +1632,6 @@ async function fetchAllProjects(forceRefresh = false) {
         }
     }
 
-    // Fetch all query types in parallel
     const allPromises = [
         ...CONFIG.topicQueries.map(q => fetchAndCollect(q, CONFIG.minStars)),
         ...CONFIG.keywordQueries.map(q => fetchAndCollect(q, CONFIG.minStars)),
@@ -1607,9 +1643,9 @@ async function fetchAllProjects(forceRefresh = false) {
 
     let projects = Array.from(projectMap.values());
 
-    // Improved star growth estimation
+    // Compute derived fields
+    const now = Date.now();
     projects.forEach(p => {
-        const now = Date.now();
         const createdAt = new Date(p.created_at).getTime();
         const pushedAt = new Date(p.pushed_at).getTime();
         const ageDays = Math.max(1, (now - createdAt) / 86400000);
@@ -1620,11 +1656,9 @@ async function fetchAllProjects(forceRefresh = false) {
         const openIssuesRatio = p.open_issues_count / Math.max(1, p.stargazers_count);
 
         if (isNew) {
-            // New projects: much higher growth rate
             const dailyRate = p.stargazers_count / ageDays;
             p.estimated_today_stars = Math.round(dailyRate * (1 + recencyScore * 2) * (0.7 + Math.random() * 0.6));
         } else {
-            // Established projects
             const baseRate = p.stargazers_count * 0.0008;
             const activityBonus = forkRatio * 80 + openIssuesRatio * 30;
             p.estimated_today_stars = Math.round(
@@ -1643,9 +1677,7 @@ async function fetchAllProjects(forceRefresh = false) {
     });
 
     localStorage.setItem(CONFIG.cacheKey, JSON.stringify({
-        data: projects,
-        timestamp: Date.now(),
-        fetchTime: fetchTime
+        data: projects, timestamp: Date.now(), fetchTime
     }));
     return { projects, fetchTime };
 }

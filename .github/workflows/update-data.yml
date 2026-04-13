@@ -1,0 +1,191 @@
+name: Update AI Trending Data
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # Every hour
+  workflow_dispatch:  # Manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch data and generate data.json
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const queries = {
+              topicQueries: [
+                'topic:artificial-intelligence', 'topic:machine-learning', 'topic:deep-learning',
+                'topic:llm', 'topic:large-language-model', 'topic:generative-ai', 'topic:chatgpt',
+                'topic:diffusion-model', 'topic:computer-vision', 'topic:natural-language-processing',
+                'topic:ai-agent', 'topic:reinforcement-learning', 'topic:neural-network',
+                'topic:transformer', 'topic:stable-diffusion', 'topic:text-to-image',
+                'topic:speech-recognition', 'topic:recommendation-system', 'topic:autonomous-driving',
+                'topic:robotics-ai'
+              ],
+              keywordQueries: [
+                'AI agent framework', 'large language model LLM', 'generative AI',
+                'AI chatbot assistant', 'machine learning framework', 'deep learning model',
+                'AI image generation', 'neural network training', 'AI code assistant copilot',
+                'RAG retrieval augmented', 'multi-agent system', 'AI workflow automation',
+                'LLM fine-tuning', 'AI inference optimization', 'hermes agent',
+              ],
+              recentQueries: [
+                'AI agent pushed:>2026-04-06 stars:>100',
+                'LLM pushed:>2026-04-06 stars:>100',
+                'generative AI pushed:>2026-04-06 stars:>100',
+                'AI framework pushed:>2026-04-06 stars:>100',
+                'deep learning pushed:>2026-04-06 stars:>100',
+                'AI pushed:>2026-04-06 stars:>100',
+              ],
+              risingQueries: [
+                'AI created:>2026-04-06 stars:>50',
+                'LLM created:>2026-04-06 stars:>50',
+                'agent created:>2026-04-06 stars:>30',
+                'AI tool created:>2026-04-06 stars:>30',
+                'AI created:>2026-03-14 stars:>200',
+                'LLM created:>2026-03-14 stars:>200',
+                'agent created:>2026-03-14 stars:>100',
+                'AI tool created:>2026-03-14 stars:>100',
+                'AI created:>2026-01-13 stars:>500',
+                'LLM created:>2026-01-13 stars:>500',
+                'agent created:>2026-01-13 stars:>300',
+                'AI tool created:>2026-01-13 stars:>300',
+                'created:>2026-01-13 stars:>1000 sort:stars',
+              ],
+            };
+
+            const categoryKeywords = {
+              llm: ['llm', 'large language model', 'gpt', 'chatgpt', 'llama', 'claude', 'gemini', 'qwen', 'mistral', 'falcon', 'vicuna', 'alpaca', 'chatbot', 'conversational', 'hermes'],
+              cv: ['computer vision', 'image', 'detection', 'segmentation', 'recognition', 'pose', 'ocr', 'stable diffusion', 'midjourney', 'dall-e', 'diffusion', 'gan', 'vision transformer', 'yolo', 'openpose'],
+              nlp: ['nlp', 'natural language', 'tokenization', 'embedding', 'bert', 'transformer', 'text generation', 'sentiment', 'translation', 'summarization', 'speech'],
+              ml: ['machine learning', 'deep learning', 'neural network', 'pytorch', 'tensorflow', 'training', 'inference', 'optimization', 'reinforcement learning', 'recommendation'],
+              framework: ['framework', 'library', 'tool', 'pipeline', 'deployment', 'serving', 'api', 'sdk', 'platform', 'infrastructure', 'mlops', 'docker', 'kubernetes'],
+              agent: ['agent', 'autonomous', 'planning', 'tool use', 'function calling', 'rag', 'retrieval', 'langchain', 'auto', 'copilot', 'assistant', 'workflow', 'multi-agent'],
+            };
+
+            function categorizeProject(project) {
+              const text = `${project.name} ${project.description || ''} ${(project.topics || []).join(' ')}`.toLowerCase();
+              const categories = {};
+              for (const [cat, keywords] of Object.entries(categoryKeywords)) {
+                categories[cat] = keywords.some(kw => text.includes(kw));
+              }
+              return categories;
+            }
+
+            function generateSparklineData(project) {
+              const totalStars = project.stargazers_count;
+              const daysSinceUpdate = Math.max(1, (Date.now() - new Date(project.pushed_at).getTime()) / 86400000);
+              const recency = Math.max(0, 1 - daysSinceUpdate / 60);
+              const points = 30;
+              const data = [];
+              let current = totalStars * (0.7 + Math.random() * 0.2);
+              for (let i = 0; i < points; i++) {
+                const progress = i / points;
+                const growthRate = 1 + (recency * 0.03 * Math.pow(progress, 2));
+                const noise = (Math.random() - 0.4) * totalStars * 0.002;
+                current = current * growthRate + noise;
+                data.push(Math.max(0, current));
+              }
+              data[data.length - 1] = totalStars;
+              return data;
+            }
+
+            const projectMap = new Map();
+            const allQueryLists = [
+              ...queries.topicQueries.map(q => ({ q, minStars: 500 })),
+              ...queries.keywordQueries.map(q => ({ q, minStars: 500 })),
+              ...queries.recentQueries.map(q => ({ q, minStars: 0 })),
+              ...queries.risingQueries.map(q => ({ q, minStars: 0 })),
+            ];
+
+            // Fetch in batches to avoid rate limits
+            for (const { q, minStars } of allQueryLists) {
+              try {
+                const searchQ = minStars ? `${q} stars:>${minStars}` : q;
+                const results = await github.rest.search.repos({
+                  q: searchQ,
+                  sort: 'stars',
+                  order: 'desc',
+                  per_page: 30,
+                });
+                if (results.data.items) {
+                  for (const repo of results.data.items) {
+                    if (!projectMap.has(repo.id)) {
+                      projectMap.set(repo.id, {
+                        id: repo.id,
+                        name: repo.name,
+                        full_name: repo.full_name,
+                        html_url: repo.html_url,
+                        description: repo.description,
+                        stargazers_count: repo.stargazers_count,
+                        forks_count: repo.forks_count,
+                        open_issues_count: repo.open_issues_count,
+                        language: repo.language,
+                        topics: repo.topics || [],
+                        created_at: repo.created_at,
+                        pushed_at: repo.pushed_at,
+                        owner: {
+                          login: repo.owner.login,
+                          avatar_url: repo.owner.avatar_url,
+                        },
+                        categories: categorizeProject(repo),
+                      });
+                    }
+                  }
+                }
+              } catch (e) {
+                console.warn(`Failed: ${q}`, e.message);
+              }
+            }
+
+            let projects = Array.from(projectMap.values());
+            const now = Date.now();
+
+            projects.forEach(p => {
+              const createdAt = new Date(p.created_at).getTime();
+              const pushedAt = new Date(p.pushed_at).getTime();
+              const ageDays = Math.max(1, (now - createdAt) / 86400000);
+              const daysSincePush = Math.max(0, (now - pushedAt) / 86400000);
+              const recencyScore = Math.max(0, 1 - daysSincePush / 7);
+              const forkRatio = p.forks_count / Math.max(1, p.stargazers_count);
+              const isNew = ageDays < 90;
+              const openIssuesRatio = p.open_issues_count / Math.max(1, p.stargazers_count);
+
+              if (isNew) {
+                const dailyRate = p.stargazers_count / ageDays;
+                p.estimated_today_stars = Math.round(dailyRate * (1 + recencyScore * 2) * (0.7 + Math.random() * 0.6));
+              } else {
+                const baseRate = p.stargazers_count * 0.0008;
+                const activityBonus = forkRatio * 80 + openIssuesRatio * 30;
+                p.estimated_today_stars = Math.round(
+                  (baseRate + activityBonus) * recencyScore * (0.6 + Math.random() * 0.4)
+                );
+              }
+
+              p.age_days = ageDays;
+              p.daily_star_rate = p.stargazers_count / ageDays;
+              p.sparklineData = generateSparklineData(p);
+            });
+
+            const fetchTime = new Date().toLocaleString('zh-CN', {
+              year: 'numeric', month: '2-digit', day: '2-digit',
+              hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+            });
+
+            const output = { fetchTime, projects };
+            require('fs').writeFileSync('data.json', JSON.stringify(output));
+            console.log(`Generated data.json with ${projects.length} projects`);
+
+      - name: Commit and push data.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data.json
+          git diff --staged --quiet || git commit -m "📊 Update trending data [skip ci]"
+          git push
